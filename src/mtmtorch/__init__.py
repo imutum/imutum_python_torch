@@ -5,4 +5,4 @@ try:
 except PackageNotFoundError:
     __version__ = "unknown version"
     
-from .torch import *
+from .itorch import *
