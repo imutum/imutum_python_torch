@@ -18,9 +18,9 @@ class Blocks:
                 block_indexes.append(((ih, ih_end), (iw, iw_end)))
         self.block_indexes = block_indexes
 
-    def split_image(self, src_img, expand_size=(12, 12)):
-        top, bottom = expand_size[0] // 2, expand_size[0] - expand_size[0] // 2 - 1
-        left, right = expand_size[1] // 2, expand_size[1] - expand_size[1] // 2 - 1
+    def split_image(self, src_img, kernel_size=(12, 12)):
+        top, bottom = kernel_size[0] // 2, kernel_size[0] - kernel_size[0] // 2 - 1
+        left, right = kernel_size[1] // 2, kernel_size[1] - kernel_size[1] // 2 - 1
         src_img_expanded = np.pad(
             src_img,
             ((0, 0), (top, bottom), (left, right)),
@@ -30,25 +30,41 @@ class Blocks:
 
         blocks = []
         for (ih, ih_end), (iw, iw_end) in self.block_indexes:
-            block = src_img_expanded[
-                :, ih : ih_end + bottom + top, iw : iw_end + right + left
-            ]
+            block = src_img_expanded[:, ih : ih_end + bottom + top, iw : iw_end + right + left]
             blocks.append(block)
         return blocks
 
-    def unfold_block(self, block, kernel_size, dilation=1, padding=0, stride=1):
-        c, h, w = block.shape
-        h_out, w_out = h - kernel_size + 1, w - kernel_size + 1
-        b = h_out * w_out
-        c = c
+    def unfold_block(
+        self, block: np.ndarray, kernel_size: int, dilation=1, padding=0, stride=1, method="torch"
+    ) -> np.ndarray:
+        # check input
+        assert isinstance(block, np.ndarray), "block必须是numpy数组"
 
-        dst_data = np.zeros((b, c, kernel_size, kernel_size), dtype=np.float32)
-        for i in range(h_out):
-            for j in range(w_out):
-                dst_data[i * w_out + j] = block[
-                    :, i : i + kernel_size, j : j + kernel_size
-                ]
-        return dst_data
+        # 处理输入的block的参数
+        c_block, h_block, w_block = block.shape
+        h_dst, w_dst = h_block - kernel_size + 1, w_block - kernel_size + 1
+        b_out = h_dst * w_dst
+        c_out = c_block
+        h_out = kernel_size
+        w_out = kernel_size
+
+        if method == "torch":  # 调用torch的unfold函数，然后再转换为numpy数组，这种方式非常快
+            cls_torch_unfold = torch.nn.Unfold(
+                kernel_size=(h_out, w_out),
+                dilation=dilation,
+                padding=padding,
+                stride=stride,
+            )
+            _dst_data = cls_torch_unfold(torch.Tensor(block)).numpy()  # 输出的数组维度为(c * h * w, b)
+            # 将torch输出的数组转变维度，变为(b, c, h, w)
+            dst_data = einops.rearrange(_dst_data, "(c h w) b -> b c h w", h=h_out, w=w_out)
+            return dst_data
+        else:  # 逐个提取，这种方式没有用到多核并行处理，非常慢
+            dst_data = np.zeros((b_out, c_out, kernel_size, kernel_size), dtype=block.dtype)
+            for i in range(h_dst):
+                for j in range(w_dst):
+                    dst_data[i * w_dst + j] = block[:, i : i + kernel_size, j : j + kernel_size]
+            return dst_data
 
     def fold_block(self, src_data, height, width, stride=1):
         b, c, h_kernel, w_kernel = src_data.shape
@@ -58,9 +74,8 @@ class Blocks:
         if stride == 1 and h_kernel == 1 and w_kernel == 1:
             assert b == height * width, "合并块的尺寸不匹配"
             src_data = src_data.reshape(b, c)
-            data_value = torch.nn.Fold(output_size=(height, width), kernel_size=(1, 1))(
-                torch.Tensor(einops.rearrange(src_data, "b c  -> c b"))
-            ).numpy()
+            cls_torch_fold = torch.nn.Fold(output_size=(height, width), kernel_size=(h_kernel, w_kernel))
+            data_value = cls_torch_fold(torch.Tensor(einops.rearrange(src_data, "b c  -> c b"))).numpy()
         else:
             # for i in range(b):
             #     h, w = i // width, i % width
@@ -86,7 +101,7 @@ if __name__ == "__main__":
 
     t_start = time.time()
     kernel_size = 3
-    height, width = 5, 10
+    height, width = 10, 10
     block_size = (5, 5)
     arr = np.arange(height * width).reshape(1, height, width)
     print("原始数组:\n", arr)
@@ -99,15 +114,8 @@ if __name__ == "__main__":
         _h, _w = block.shape[1:]
         data = splitter.unfold_block(block, kernel_size)
         print("cost time: unfold", time.time() - t_start)
-        data_new = data[
-            :,
-            :,
-            kernel_size // 2 : kernel_size // 2 + 1,
-            kernel_size // 2 : kernel_size // 2 + 1,
-        ]
-        data_new = splitter.fold_block(
-            data_new, _h - kernel_size + 1, _w - kernel_size + 1
-        )
+        data_new = data[:, :, kernel_size // 2 : kernel_size // 2 + 1, kernel_size // 2 : kernel_size // 2 + 1]
+        data_new = splitter.fold_block(data_new, _h - kernel_size + 1, _w - kernel_size + 1)
         print("cost time:   fold", time.time() - t_start)
         processed_blocks.append(data_new)
 
