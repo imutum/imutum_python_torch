@@ -34,39 +34,38 @@ class Blocks:
             blocks.append(block)
         return blocks
 
-    def unfold_block(
-        self, block: np.ndarray, kernel_size: int, dilation=1, padding=0, stride=1, method="torch"
-    ) -> np.ndarray:
-        # check input
+    def unfold_block(self, block: np.ndarray, kernel_size, dilation=1, padding=0, stride=1) -> np.ndarray:
+        # 检查输入的block
         assert isinstance(block, np.ndarray), "block必须是numpy数组"
 
-        # 处理输入的block的参数
-        c_block, h_block, w_block = block.shape
-        h_dst, w_dst = h_block - kernel_size + 1, w_block - kernel_size + 1
-        b_out = h_dst * w_dst
-        c_out = c_block
-        h_out = kernel_size
-        w_out = kernel_size
+        # 调用torch的unfold函数，然后再转换为numpy数组，这种方式非常快
+        cls_torch_unfold = torch.nn.Unfold(
+            kernel_size=kernel_size,
+            dilation=dilation,
+            padding=padding,
+            stride=stride,
+        )
+        cls_torch_unfold_data = cls_torch_unfold(torch.Tensor(block)).numpy()  # (c * h * w, b)
+        dst_data = einops.rearrange(
+            cls_torch_unfold_data, "(c h w) b -> b c h w", h=kernel_size, w=kernel_size
+        )  # (b, c, h, w)
 
-        if method == "torch":  # 调用torch的unfold函数，然后再转换为numpy数组，这种方式非常快
-            cls_torch_unfold = torch.nn.Unfold(
-                kernel_size=(h_out, w_out),
-                dilation=dilation,
-                padding=padding,
-                stride=stride,
-            )
-            _dst_data = cls_torch_unfold(torch.Tensor(block)).numpy()  # 输出的数组维度为(c * h * w, b)
-            # 将torch输出的数组转变维度，变为(b, c, h, w)
-            dst_data = einops.rearrange(_dst_data, "(c h w) b -> b c h w", h=h_out, w=w_out)
-            return dst_data
-        else:  # 逐个提取，这种方式没有用到多核并行处理，非常慢
-            dst_data = np.zeros((b_out, c_out, kernel_size, kernel_size), dtype=block.dtype)
-            for i in range(h_dst):
-                for j in range(w_dst):
-                    dst_data[i * w_dst + j] = block[:, i : i + kernel_size, j : j + kernel_size]
-            return dst_data
+        # # 逐个提取，这种方式没有用到多核并行处理，非常慢
+        # # 处理输入的block的参数
+        # c_block, h_block, w_block = block.shape
+        # h_dst, w_dst = h_block - kernel_size + 1, w_block - kernel_size + 1
+        # b_out = h_dst * w_dst
+        # c_out = c_block
+        # h_out = kernel_size
+        # w_out = kernel_size
+        # dst_data = np.zeros((b_out, c_out, kernel_size, kernel_size), dtype=block.dtype)
+        # for i in range(h_dst):
+        #     for j in range(w_dst):
+        #         dst_data[i * w_dst + j] = block[:, i : i + kernel_size, j : j + kernel_size]
 
-    def fold_block(self, src_data, height, width, stride=1):
+        return dst_data
+
+    def fold_block(self, src_data, height, width, stride=1) -> np.ndarray:
         b, c, h_kernel, w_kernel = src_data.shape
         data_value = np.zeros((c, height, width), dtype=np.float32)
         data_count = np.zeros((c, height, width), dtype=np.int16)
