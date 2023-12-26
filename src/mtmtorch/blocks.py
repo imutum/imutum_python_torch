@@ -34,21 +34,22 @@ class Blocks:
             blocks.append(block)
         return blocks
 
-    def unfold_block(self, block: np.ndarray, kernel_size, dilation=1, padding=0, stride=1) -> np.ndarray:
+    def unfold_block(self, block: np.ndarray, kernel_size, dilation=1, padding=0, stride=1, device="cpu") -> np.ndarray:
         # 检查输入的block
         assert isinstance(block, np.ndarray), "block必须是numpy数组"
-
-        # 调用torch的unfold函数，然后再转换为numpy数组，这种方式非常快
-        cls_torch_unfold = torch.nn.Unfold(
-            kernel_size=kernel_size,
-            dilation=dilation,
-            padding=padding,
-            stride=stride,
-        )
-        cls_torch_unfold_data = cls_torch_unfold(torch.Tensor(block)).numpy()  # (c * h * w, b)
-        dst_data = einops.rearrange(
-            cls_torch_unfold_data, "(c h w) b -> b c h w", h=kernel_size, w=kernel_size
-        )  # (b, c, h, w)
+        device: torch.device = device if isinstance(device, torch.device) else torch.device(device)
+        with device:
+            # 调用torch的unfold函数，然后再转换为numpy数组，这种方式非常快
+            cls_torch_unfold = torch.nn.Unfold(
+                kernel_size=kernel_size,
+                dilation=dilation,
+                padding=padding,
+                stride=stride,
+            )
+            cls_torch_unfold_data = cls_torch_unfold(torch.Tensor(block)).numpy()  # (c * h * w, b)
+            dst_data = einops.rearrange(
+                cls_torch_unfold_data, "(c h w) b -> b c h w", h=kernel_size, w=kernel_size
+            )  # (b, c, h, w)
 
         # # 逐个提取，这种方式没有用到多核并行处理，非常慢
         # # 处理输入的block的参数
@@ -65,7 +66,7 @@ class Blocks:
 
         return dst_data
 
-    def fold_block(self, src_data, height, width, stride=1) -> np.ndarray:
+    def fold_block(self, src_data, height, width, stride=1, device="cpu") -> np.ndarray:
         b, c, h_kernel, w_kernel = src_data.shape
         data_value = np.zeros((c, height, width), dtype=np.float32)
         data_count = np.zeros((c, height, width), dtype=np.int16)
@@ -73,8 +74,10 @@ class Blocks:
         if stride == 1 and h_kernel == 1 and w_kernel == 1:
             assert b == height * width, "合并块的尺寸不匹配"
             src_data = src_data.reshape(b, c)
-            cls_torch_fold = torch.nn.Fold(output_size=(height, width), kernel_size=(h_kernel, w_kernel))
-            data_value = cls_torch_fold(torch.Tensor(einops.rearrange(src_data, "b c  -> c b"))).numpy()
+            device: torch.device = device if isinstance(device, torch.device) else torch.device(device)
+            with device:
+                cls_torch_fold = torch.nn.Fold(output_size=(height, width), kernel_size=(h_kernel, w_kernel))
+                data_value = cls_torch_fold(torch.Tensor(einops.rearrange(src_data, "b c  -> c b"))).numpy()
         else:
             # for i in range(b):
             #     h, w = i // width, i % width
